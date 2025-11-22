@@ -274,6 +274,9 @@
         let board = [];
         let currentPlayer = BLACK;
         let gameOver = false;
+        let gameMode = 'pvc'; // 'pvp' or 'pvc'
+        let difficulty = 'medium';
+        let cpuThinking = false;
 
         // 方向ベクトル（8方向）
         const directions = [
@@ -281,6 +284,38 @@
             [0, -1],           [0, 1],
             [1, -1],  [1, 0],  [1, 1]
         ];
+
+        function setGameMode(mode) {
+            gameMode = mode;
+            document.getElementById('pvp-btn').classList.remove('active');
+            document.getElementById('pvc-btn').classList.remove('active');
+            document.getElementById(mode === 'pvp' ? 'pvp-btn' : 'pvc-btn').classList.add('active');
+            
+            document.getElementById('difficulty-selection').style.display = mode === 'pvc' ? 'block' : 'none';
+            
+            updatePlayerNames();
+            newGame();
+        }
+
+        function updateDifficulty() {
+            difficulty = document.getElementById('difficulty').value;
+        }
+
+        function updatePlayerNames() {
+            const whiteNameElement = document.querySelector('#white-info .player-name');
+            if (gameMode === 'pvc') {
+                whiteNameElement.textContent = '⚪ CPU';
+            } else {
+                whiteNameElement.textContent = '⚪ 白';
+            }
+            
+            const blackNameElement = document.querySelector('#black-info .player-name');
+            if (gameMode === 'pvc') {
+                blackNameElement.textContent = '⚫ プレイヤー';
+            } else {
+                blackNameElement.textContent = '⚫ 黒';
+            }
+        }
 
         function initBoard() {
             board = Array(BOARD_SIZE).fill(null).map(() => Array(BOARD_SIZE).fill(EMPTY));
@@ -377,28 +412,144 @@
             }
         }
 
-        function handleCellClick(row, col) {
-            if (gameOver) return;
+        function makeMove(row, col, player) {
+            board[row][col] = player;
+            flipPieces(row, col, player);
             
-            if (isValidMove(row, col, currentPlayer)) {
-                board[row][col] = currentPlayer;
-                flipPieces(row, col, currentPlayer);
-                
+            currentPlayer = currentPlayer === BLACK ? WHITE : BLACK;
+            
+            if (!hasValidMoves(currentPlayer)) {
                 currentPlayer = currentPlayer === BLACK ? WHITE : BLACK;
                 
                 if (!hasValidMoves(currentPlayer)) {
-                    currentPlayer = currentPlayer === BLACK ? WHITE : BLACK;
-                    
-                    if (!hasValidMoves(currentPlayer)) {
-                        endGame();
-                        return;
-                    } else {
+                    renderBoard();
+                    endGame();
+                    return false;
+                } else {
+                    if (gameMode === 'pvp') {
                         showMessage('相手にパスがありません。もう一度あなたのターンです！');
+                    } else {
+                        if (currentPlayer === BLACK) {
+                            showMessage('CPUにパスがありません。もう一度あなたのターンです！');
+                        } else {
+                            showMessage('あなたにパスがありません。CPUのターンです！');
+                        }
                     }
                 }
-                
-                renderBoard();
             }
+            
+            renderBoard();
+            return true;
+        }
+
+        function handleCellClick(row, col) {
+            if (gameOver || cpuThinking) return;
+            
+            // PvCモードでCPUのターンの場合はクリックを無効化
+            if (gameMode === 'pvc' && currentPlayer === WHITE) return;
+            
+            if (isValidMove(row, col, currentPlayer)) {
+                const continueGame = makeMove(row, col, currentPlayer);
+                
+                // CPU対戦モードで、ゲームが続き、CPUのターンの場合
+                if (continueGame !== false && gameMode === 'pvc' && currentPlayer === WHITE && !gameOver) {
+                    setTimeout(() => {
+                        cpuMove();
+                    }, 100);
+                }
+            }
+        }
+
+        function cpuMove() {
+            cpuThinking = true;
+            showMessage('🤔 CPUが考え中...');
+            document.getElementById('message').classList.add('cpu-thinking');
+            
+            setTimeout(() => {
+                const move = getBestMove();
+                if (move) {
+                    const continueGame = makeMove(move.row, move.col, WHITE);
+                    
+                    // CPUの手番後、再びCPUのターンになった場合（プレイヤーがパス）
+                    if (continueGame !== false && currentPlayer === WHITE && !gameOver) {
+                        cpuMove(); // 再帰的にCPUの手を打つ
+                        return;
+                    }
+                }
+                cpuThinking = false;
+                document.getElementById('message').classList.remove('cpu-thinking');
+            }, 500 + Math.random() * 500); // ランダムな遅延で自然な感じに
+        }
+
+        function getBestMove() {
+            const validMoves = getValidMoves(WHITE);
+            if (validMoves.length === 0) return null;
+            
+            if (difficulty === 'easy') {
+                // 簡単: ランダムに選択
+                return validMoves[Math.floor(Math.random() * validMoves.length)];
+            } else if (difficulty === 'medium') {
+                // 普通: ひっくり返せる数が最も多い手を選択
+                return validMoves.reduce((best, move) => {
+                    const score = evaluateMove(move.row, move.col, WHITE);
+                    return score > best.score ? {row: move.row, col: move.col, score} : best;
+                }, {row: validMoves[0].row, col: validMoves[0].col, score: -1});
+            } else {
+                // 難しい: 位置の価値も考慮した戦略的な選択
+                return validMoves.reduce((best, move) => {
+                    const score = evaluateMoveAdvanced(move.row, move.col, WHITE);
+                    return score > best.score ? {row: move.row, col: move.col, score} : best;
+                }, {row: validMoves[0].row, col: validMoves[0].col, score: -Infinity});
+            }
+        }
+
+        function getValidMoves(player) {
+            const moves = [];
+            for (let row = 0; row < BOARD_SIZE; row++) {
+                for (let col = 0; col < BOARD_SIZE; col++) {
+                    if (isValidMove(row, col, player)) {
+                        moves.push({row, col});
+                    }
+                }
+            }
+            return moves;
+        }
+
+        function evaluateMove(row, col, player) {
+            // ひっくり返せる石の数を数える
+            let count = 0;
+            for (const [dr, dc] of directions) {
+                if (checkDirection(row, col, dr, dc, player)) {
+                    let r = row + dr;
+                    let c = col + dc;
+                    while (board[r][c] !== player) {
+                        count++;
+                        r += dr;
+                        c += dc;
+                    }
+                }
+            }
+            return count;
+        }
+
+        function evaluateMoveAdvanced(row, col, player) {
+            // 位置の価値テーブル（角が高価値、角の隣は低価値）
+            const positionValue = [
+                [100, -20, 10,  5,  5, 10, -20, 100],
+                [-20, -50, -2, -2, -2, -2, -50, -20],
+                [ 10,  -2, -1, -1, -1, -1,  -2,  10],
+                [  5,  -2, -1, -1, -1, -1,  -2,   5],
+                [  5,  -2, -1, -1, -1, -1,  -2,   5],
+                [ 10,  -2, -1, -1, -1, -1,  -2,  10],
+                [-20, -50, -2, -2, -2, -2, -50, -20],
+                [100, -20, 10,  5,  5, 10, -20, 100]
+            ];
+            
+            const flipCount = evaluateMove(row, col, player);
+            const posValue = positionValue[row][col];
+            
+            // ひっくり返せる数と位置の価値を組み合わせる
+            return flipCount * 2 + posValue;
         }
 
         function hasValidMoves(player) {
@@ -413,6 +564,11 @@
         }
 
         function showHint() {
+            if (gameMode === 'pvc' && currentPlayer === WHITE) {
+                showMessage('CPUのターンではヒントは表示できません');
+                return;
+            }
+            
             const cells = document.querySelectorAll('.cell');
             cells.forEach(cell => cell.classList.remove('valid-move'));
             
@@ -455,10 +611,18 @@
             if (!gameOver) {
                 if (currentPlayer === BLACK) {
                     blackInfo.classList.add('active');
-                    showMessage('⚫ 黒のターンです');
+                    if (gameMode === 'pvc') {
+                        showMessage('⚫ あなたのターンです');
+                    } else {
+                        showMessage('⚫ 黒のターンです');
+                    }
                 } else {
                     whiteInfo.classList.add('active');
-                    showMessage('⚪ 白のターンです');
+                    if (gameMode === 'pvc') {
+                        showMessage('⚪ CPUのターンです');
+                    } else {
+                        showMessage('⚪ 白のターンです');
+                    }
                 }
             }
         }
@@ -474,12 +638,23 @@
             const whiteScore = parseInt(document.getElementById('white-score').textContent);
             
             let msg = 'ゲーム終了！ ';
-            if (blackScore > whiteScore) {
-                msg += '⚫ 黒の勝ちです！';
-            } else if (whiteScore > blackScore) {
-                msg += '⚪ 白の勝ちです！';
+            
+            if (gameMode === 'pvc') {
+                if (blackScore > whiteScore) {
+                    msg += '🎉 あなたの勝ちです！';
+                } else if (whiteScore > blackScore) {
+                    msg += '💻 CPUの勝ちです！';
+                } else {
+                    msg += '引き分けです！';
+                }
             } else {
-                msg += '引き分けです！';
+                if (blackScore > whiteScore) {
+                    msg += '⚫ 黒の勝ちです！';
+                } else if (whiteScore > blackScore) {
+                    msg += '⚪ 白の勝ちです！';
+                } else {
+                    msg += '引き分けです！';
+                }
             }
             
             document.getElementById('message').textContent = msg;
@@ -489,6 +664,7 @@
         function newGame() {
             gameOver = false;
             currentPlayer = BLACK;
+            cpuThinking = false;
             initBoard();
             renderBoard();
         }
